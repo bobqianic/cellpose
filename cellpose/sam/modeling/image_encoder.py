@@ -7,6 +7,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+try:
+    from torch.nn.functional import scaled_dot_product_attention
+
+    SDPA_AVAILABLE = True
+except (ImportError, RuntimeError, OSError):
+    scaled_dot_product_attention = None
+    SDPA_AVAILABLE = False
 
 from typing import Optional, Tuple, Type
 
@@ -234,7 +241,7 @@ class Attention(nn.Module):
 
         # Use PyTorch SDPA when available and no rel-pos bias is needed.
         # PyTorch will pick flash attention automatically when possible.
-        if hasattr(F, "scaled_dot_product_attention") and not self.use_rel_pos:
+        if SDPA_AVAILABLE and not self.use_rel_pos:
             x = F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=0.0,
