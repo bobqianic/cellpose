@@ -242,7 +242,7 @@ class Attention(nn.Module):
 
         # Use PyTorch SDPA when available and no rel-pos bias is needed.
         # PyTorch will pick flash attention automatically when possible.
-        if SDPA_AVAILABLE:
+        if SDPA_AVAILABLE and not self.training:
             attn_mask = None
             if self.use_rel_pos:
                 attn_mask = decomposed_rel_pos_bias(
