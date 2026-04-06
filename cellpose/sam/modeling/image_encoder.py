@@ -228,6 +228,7 @@ class Attention(nn.Module):
             self.rel_pos_h = nn.Parameter(torch.zeros(2 * input_size[0] - 1, head_dim))
             self.rel_pos_w = nn.Parameter(torch.zeros(2 * input_size[1] - 1, head_dim))
 
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, _ = x.shape
         L = H * W
@@ -241,16 +242,23 @@ class Attention(nn.Module):
 
         # Use PyTorch SDPA when available and no rel-pos bias is needed.
         # PyTorch will pick flash attention automatically when possible.
-        if SDPA_AVAILABLE and not self.use_rel_pos:
+        if SDPA_AVAILABLE:
+            attn_mask = None
+            if self.use_rel_pos:
+                attn_mask = decomposed_rel_pos_bias(
+                    q, self.rel_pos_h, self.rel_pos_w, (H, W), (H, W)
+                )
+
             x = F.scaled_dot_product_attention(
                 q, k, v,
+                attn_mask=attn_mask,
                 dropout_p=0.0,
                 scale=self.scale,
             )
             x = x.transpose(1, 2).reshape(B, H, W, -1)
             return self.proj(x)
 
-        # Fallback: vanilla attention
+        # fallback
         q = q.reshape(B * self.num_heads, L, -1)
         k = k.reshape(B * self.num_heads, L, -1)
         v = v.reshape(B * self.num_heads, L, -1)
@@ -389,6 +397,32 @@ def add_decomposed_rel_pos(
     ).view(B, q_h * q_w, k_h * k_w)
 
     return attn
+
+
+def decomposed_rel_pos_bias(
+    q: torch.Tensor,                                        # (B, num_heads, Lq, dim)
+    rel_pos_h: torch.Tensor,
+    rel_pos_w: torch.Tensor,
+    q_size: Tuple[int, int],
+    k_size: Tuple[int, int],
+) -> torch.Tensor:
+    q_h, q_w = q_size
+    k_h, k_w = k_size
+
+    Rh = get_rel_pos(q_h, k_h, rel_pos_h).to(dtype=q.dtype, device=q.device)
+    Rw = get_rel_pos(q_w, k_w, rel_pos_w).to(dtype=q.dtype, device=q.device)
+
+    B, num_heads, _, dim = q.shape
+    r_q = q.reshape(B * num_heads, q_h, q_w, dim)
+
+    rel_h = torch.einsum("bhwc,hkc->bhwk", r_q, Rh)   # (B*H, q_h, q_w, k_h)
+    rel_w = torch.einsum("bhwc,wkc->bhwk", r_q, Rw)   # (B*H, q_h, q_w, k_w)
+
+    bias = (
+        rel_h[:, :, :, :, None] + rel_w[:, :, :, None, :]
+    ).reshape(B, num_heads, q_h * q_w, k_h * k_w)
+
+    return bias
 
 
 class PatchEmbed(nn.Module):
